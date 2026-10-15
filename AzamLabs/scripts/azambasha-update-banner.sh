@@ -160,8 +160,10 @@ else
     RESET=
 fi
 
-VERSION=$(dpkg-query -W -f='${Version}' azamlabs 2>/dev/null || cat /etc/azamlabs-version 2>/dev/null || echo "6.8.87resolute1")
-[ -n "$VERSION" ] || VERSION="v8.2"
+VERSION=$(dpkg-query -W -f='${Version}' azamlabs 2>/dev/null || true)
+[ -z "$VERSION" ] && VERSION=$(grep '^PACKAGE_VERSION=' /etc/azamlabs-version 2>/dev/null | cut -d= -f2 || true)
+[ -z "$VERSION" ] && VERSION=$(grep '^VERSION=' /etc/azamlabs-version 2>/dev/null | cut -d= -f2 || true)
+[ -z "$VERSION" ] && VERSION="6.8.87resolute1"
 
 printf '\n'
 printf '%s%s AzamLabs v8.2%s%s - engine %s - network labs, wire-rate fun%s\n' \
@@ -192,8 +194,10 @@ else
     RESET=
 fi
 
-VERSION=$(dpkg-query -W -f='${Version}' azamlabs 2>/dev/null || cat /etc/azamlabs-version 2>/dev/null || echo "6.8.87resolute1")
-[ -n "$VERSION" ] || VERSION="v8.2"
+VERSION=$(dpkg-query -W -f='${Version}' azamlabs 2>/dev/null || true)
+[ -z "$VERSION" ] && VERSION=$(grep '^PACKAGE_VERSION=' /etc/azamlabs-version 2>/dev/null | cut -d= -f2 || true)
+[ -z "$VERSION" ] && VERSION=$(grep '^VERSION=' /etc/azamlabs-version 2>/dev/null | cut -d= -f2 || true)
+[ -z "$VERSION" ] && VERSION="6.8.87resolute1"
 
 MGMT_IP=
 if command -v ip >/dev/null 2>&1; then
@@ -298,6 +302,11 @@ cp -f /etc/update-motd.d/00-azamlabs-header /opt/unetlab/scripts/motd/00-azamlab
 cp -f /etc/update-motd.d/10-azamlabs-status /opt/unetlab/scripts/motd/10-azamlabs-status 2>/dev/null || true
 cp -f /etc/update-motd.d/90-azamlabs-fortune /opt/unetlab/scripts/motd/90-azamlabs-fortune 2>/dev/null || true
 echo "[azambasha-banner] Deployed dynamic AzamLabs SSH MOTD (/etc/update-motd.d/)"
+
+# Refresh /run/motd.dynamic immediately so active and next SSH sessions see the new banner
+if command -v run-parts >/dev/null 2>&1 && [ -d /etc/update-motd.d ]; then
+    run-parts --lsbsysinit /etc/update-motd.d > /run/motd.dynamic 2>/dev/null || true
+fi
 
 # 5. Refresh Active TTY Console so the banner updates on screen immediately
 if [ -c /dev/tty1 ]; then
