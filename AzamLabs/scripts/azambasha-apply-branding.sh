@@ -194,6 +194,15 @@ if command -v systemctl >/dev/null 2>&1; then
     systemctl reload php*-fpm 2>/dev/null || true
 fi
 
+# 13. Synchronize Authoritative Console Banner & Dynamic SSH MOTD
+BANNER_SCRIPT="${SCRIPT_DIR}/azambasha-update-banner.sh"
+[ ! -f "$BANNER_SCRIPT" ] && BANNER_SCRIPT="/usr/local/bin/azambasha-update-banner.sh"
+[ ! -f "$BANNER_SCRIPT" ] && BANNER_SCRIPT="/opt/azambasha/scripts/azambasha-update-banner.sh"
+if [ -f "$BANNER_SCRIPT" ]; then
+    bash "$BANNER_SCRIPT" >/dev/null 2>&1 || true
+    echo "  [✔] Console banner and dynamic SSH MOTD synchronized"
+fi
+
 echo "============================================================"
 echo "  [SUCCESS] Version 1.0.0, Password & Node Engine Active!   "
 echo "============================================================"
