@@ -1,0 +1,178 @@
+commit 3e6a53c4b9bc8cd624dc4c4626a5fcd96c70b713
+Author: YueGuobin <yueguobin@outlook.com>
+Date:   Wed Oct 14 22:13:58 2026 +0800
+
+    style: apply ruff format to the files this branch touches
+
+diff --git a/gns3server/compute/builtin/nodes/ethernet_switch.py b/gns3server/compute/builtin/nodes/ethernet_switch.py
+index 5989ccc7..9d8b55b5 100644
+--- a/gns3server/compute/builtin/nodes/ethernet_switch.py
++++ b/gns3server/compute/builtin/nodes/ethernet_switch.py
+@@ -795,7 +795,7 @@ class EthernetSwitch(KernelDatapathMixin, BaseNode):
+             anchor = self._kernel_ports.get(port_number)
+             if anchor is not None:
+                 # Per-interface stop: only this port's capture is stopped.
+-                await self._ubridge_send(f'capture stop_kernel {anchor}')
++                await self._ubridge_send(f"capture stop_kernel {anchor}")
+             else:
+                 ubridge_bridge = self._ubridge_bridge_name(port_number)
+                 await self._ubridge_send(f"bridge stop_capture {ubridge_bridge}")
+diff --git a/gns3server/compute/docker/docker_vm.py b/gns3server/compute/docker/docker_vm.py
+index 341f773e..9e99c910 100644
+--- a/gns3server/compute/docker/docker_vm.py
++++ b/gns3server/compute/docker/docker_vm.py
+@@ -2044,7 +2044,7 @@ class DockerVM(DockerKernelDatapathMixin, BaseNode):
+             # capturing flag above gates it, so uBridge's 208-on-idle-
+             # interface can only surface on a genuine desync).
+             host_ifc = self._kernel_host_ifc(adapter_number, port_number)
+-            await self._ubridge_send(f'capture stop_kernel {host_ifc}')
++            await self._ubridge_send(f"capture stop_kernel {host_ifc}")
+             return
+         bridge_name = self._bridge_name(adapter_number, port_number)
+         await self._ubridge_send(f"bridge stop_capture {bridge_name}")
+diff --git a/gns3server/compute/dynamips/nodes/router.py b/gns3server/compute/dynamips/nodes/router.py
+index 863d3eb4..59a41485 100644
+--- a/gns3server/compute/dynamips/nodes/router.py
++++ b/gns3server/compute/dynamips/nodes/router.py
+@@ -1536,7 +1536,7 @@ class Router(KernelDatapathMixin, BaseNode):
+             anchor = self._kernel_host_ifc(slot_number, port_number)
+             if self.ubridge and anchor is not None:
+                 # Per-interface stop: only this port's capture is stopped.
+-                await self._ubridge_send(f'capture stop_kernel {anchor}')
++                await self._ubridge_send(f"capture stop_kernel {anchor}")
+             return
+         await nio.stop_packet_capture()
+ 
+diff --git a/gns3server/compute/iou/iou_vm.py b/gns3server/compute/iou/iou_vm.py
+index 3ec1602a..679050f6 100644
+--- a/gns3server/compute/iou/iou_vm.py
++++ b/gns3server/compute/iou/iou_vm.py
+@@ -1869,7 +1869,7 @@ class IOUVM(KernelDatapathMixin, BaseNode):
+                 # Per-interface stop: only this port's capture is stopped.
+                 anchor = self._kernel_host_ifc(adapter_number, port_number)
+                 if anchor is not None:
+-                    await self._ubridge_send(f'capture stop_kernel {anchor}')
++                    await self._ubridge_send(f"capture stop_kernel {anchor}")
+             else:
+                 await self._ubridge_send(
+                     f"iol_bridge stop_capture {self._iol_bridge_name()} {adapter_number} {port_number}"
+diff --git a/gns3server/compute/qemu/qemu_vm.py b/gns3server/compute/qemu/qemu_vm.py
+index 24e296fe..eb2f2eb7 100644
+--- a/gns3server/compute/qemu/qemu_vm.py
++++ b/gns3server/compute/qemu/qemu_vm.py
+@@ -1790,7 +1790,7 @@ class QemuVM(KernelDatapathMixin, BaseNode):
+             anchor = self._kernel_host_ifc(adapter_number)
+             if isinstance(nio, NIOBridge) and anchor is not None:
+                 # Per-interface stop: only this port's capture is stopped.
+-                await self._ubridge_send(f'capture stop_kernel {anchor}')
++                await self._ubridge_send(f"capture stop_kernel {anchor}")
+             else:
+                 await self._ubridge_send("bridge stop_capture {name}".format(name=f"QEMU-{self._id}-{adapter_number}"))
+ 
+diff --git a/gns3server/compute/vpcs/vpcs_vm.py b/gns3server/compute/vpcs/vpcs_vm.py
+index 823b2a35..df9c31ab 100644
+--- a/gns3server/compute/vpcs/vpcs_vm.py
++++ b/gns3server/compute/vpcs/vpcs_vm.py
+@@ -691,7 +691,7 @@ class VPCSVM(KernelDatapathMixin, BaseNode):
+             anchor = self._kernel_host_ifc(0, port_number)
+             if isinstance(nio, NIOBridge) and anchor is not None:
+                 # Per-interface stop: only this port's capture is stopped.
+-                await self._ubridge_send(f'capture stop_kernel {anchor}')
++                await self._ubridge_send(f"capture stop_kernel {anchor}")
+             else:
+                 await self._ubridge_send("bridge stop_capture {name}".format(name=f"VPCS-{self._id}"))
+ 
+diff --git a/tests/api/routes/compute/test_ethernet_switch_nodes.py b/tests/api/routes/compute/test_ethernet_switch_nodes.py
+index 9d2d1c76..2c03b698 100644
+--- a/tests/api/routes/compute/test_ethernet_switch_nodes.py
++++ b/tests/api/routes/compute/test_ethernet_switch_nodes.py
+@@ -792,7 +792,7 @@ class TestEthernetSwitchNodesRoutes:
+             )
+         )
+         assert response.status_code == status.HTTP_204_NO_CONTENT
+-        node._ubridge_send.assert_any_call(f'capture stop_kernel {anchor}')
++        node._ubridge_send.assert_any_call(f"capture stop_kernel {anchor}")
+ 
+     async def test_ethernet_switch_batch_create_anchor_nio(
+         self, app: FastAPI, compute_client: AsyncClient, compute_project: Project, ethernet_switch: dict
+diff --git a/tests/compute/docker/test_docker_kernel_datapath.py b/tests/compute/docker/test_docker_kernel_datapath.py
+index 107ad69e..abfc2322 100644
+--- a/tests/compute/docker/test_docker_kernel_datapath.py
++++ b/tests/compute/docker/test_docker_kernel_datapath.py
+@@ -997,7 +997,7 @@ async def test_stop_capture_kernel(vm):
+     await vm.stop_capture(0)
+ 
+     assert nio.capturing is False
+-    vm._ubridge_send.assert_any_call(f'capture stop_kernel {host_ifc}')
++    vm._ubridge_send.assert_any_call(f"capture stop_kernel {host_ifc}")
+ 
+ 
+ @pytest.mark.asyncio
+@@ -1061,11 +1061,11 @@ async def test_capture_two_ports_at_once_and_stop_them_independently(vm):
+ 
+     assert nio1.capturing is True
+     assert nio2.capturing is False
+-    vm._ubridge_send.assert_any_call(f'capture stop_kernel {host_ifc2}')
+-    assert not any(f'stop_kernel {host_ifc1}' in str(c) for c in vm._ubridge_send.call_args_list)
++    vm._ubridge_send.assert_any_call(f"capture stop_kernel {host_ifc2}")
++    assert not any(f"stop_kernel {host_ifc1}" in str(c) for c in vm._ubridge_send.call_args_list)
+ 
+     await vm.stop_capture(0)
+-    vm._ubridge_send.assert_any_call(f'capture stop_kernel {host_ifc1}')
++    vm._ubridge_send.assert_any_call(f"capture stop_kernel {host_ifc1}")
+ 
+ 
+ @pytest.mark.asyncio
+diff --git a/tests/compute/dynamips/test_dynamips_kernel_datapath.py b/tests/compute/dynamips/test_dynamips_kernel_datapath.py
+index 230a6ca7..135a69f6 100644
+--- a/tests/compute/dynamips/test_dynamips_kernel_datapath.py
++++ b/tests/compute/dynamips/test_dynamips_kernel_datapath.py
+@@ -581,7 +581,7 @@ async def test_capture_on_a_kernel_link_uses_the_anchor(router):
+     assert not any("bind_filter" in c for c in _hypervisor_commands(router))
+ 
+     await router.stop_capture(0, 0)
+-    router._ubridge_send.assert_any_call(f'capture stop_kernel {TAP00}')
++    router._ubridge_send.assert_any_call(f"capture stop_kernel {TAP00}")
+ 
+ 
+ @pytest.mark.asyncio
+diff --git a/tests/compute/iou/test_iou_kernel_datapath.py b/tests/compute/iou/test_iou_kernel_datapath.py
+index 0e6df136..7121800e 100644
+--- a/tests/compute/iou/test_iou_kernel_datapath.py
++++ b/tests/compute/iou/test_iou_kernel_datapath.py
+@@ -371,7 +371,7 @@ async def test_capture_on_a_kernel_link_uses_the_anchor(vm):
+     vm._ubridge_send.assert_any_call(f'capture start_kernel {TAP00} "/tmp/test.pcap"')
+ 
+     await vm.stop_capture(0, 0)
+-    vm._ubridge_send.assert_any_call(f'capture stop_kernel {TAP00}')
++    vm._ubridge_send.assert_any_call(f"capture stop_kernel {TAP00}")
+ 
+ 
+ @pytest.mark.asyncio
+diff --git a/tests/compute/qemu/test_qemu_kernel_datapath.py b/tests/compute/qemu/test_qemu_kernel_datapath.py
+index 79709d3c..a7226c08 100644
+--- a/tests/compute/qemu/test_qemu_kernel_datapath.py
++++ b/tests/compute/qemu/test_qemu_kernel_datapath.py
+@@ -328,7 +328,7 @@ async def test_capture_on_a_kernel_link_uses_the_anchor(vm):
+     vm._ubridge_send.assert_any_call(f'capture start_kernel {TAP0} "/tmp/test.pcap"')
+ 
+     await vm.stop_capture(0)
+-    vm._ubridge_send.assert_any_call(f'capture stop_kernel {TAP0}')
++    vm._ubridge_send.assert_any_call(f"capture stop_kernel {TAP0}")
+ 
+ 
+ @pytest.mark.asyncio
+diff --git a/tests/e2e/test_docker_kernel_datapath.py b/tests/e2e/test_docker_kernel_datapath.py
+index ed75fff5..877ec02c 100644
+--- a/tests/e2e/test_docker_kernel_datapath.py
++++ b/tests/e2e/test_docker_kernel_datapath.py
+@@ -352,7 +352,9 @@ def test_docker_kernel_ten_concurrent_captures():
+         # every later frame (up to and including the ARP each first ping
+         # triggers) lands in a pcap
+         captures = [
+-            compute.call("POST", f"/projects/{pid}/links/{link['link_id']}/capture/start", {"data_link_type": "DLT_EN10MB"})
++            compute.call(
++                "POST", f"/projects/{pid}/links/{link['link_id']}/capture/start", {"data_link_type": "DLT_EN10MB"}
++            )
+             for link in links
+         ]

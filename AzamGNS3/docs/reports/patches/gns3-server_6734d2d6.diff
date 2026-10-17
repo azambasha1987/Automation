@@ -1,0 +1,757 @@
+commit 6734d2d666e0c2d9f3f977dba16199ed764835b7
+Author: YueGuobin <yueguobin@outlook.com>
+Date:   Thu Oct 15 20:07:14 2026 +0800
+
+    feat: add auto_connect flag and disconnect endpoint for computes
+    
+    Computes can now be flagged auto_connect in the database. The controller
+    connects to flagged computes in the background at startup (reusing the
+    one-second delayed fire-and-forget mechanism), and enabling the flag via
+    PUT /computes/{id} triggers a background connection without the request
+    ever waiting for it. Disabling the flag does not drop an existing
+    connection.
+    
+    Add POST /computes/{id}/disconnect to tear a compute down manually: the
+    notification stream and HTTP session are closed and every reconnection
+    path (retry backoff, notification stream reconnect, lazy connection in
+    http_query) is blocked until connect() is called again or the controller
+    restarts with auto_connect enabled. Disconnecting a compute used by an
+    opened project is rejected with 409 unless force=true; forcing only
+    drops the controller-side control channel, nodes keep running unmanaged.
+    The local compute cannot be disconnected.
+    
+    Also make test_compute_list create its own compute (it relied on rows
+    from earlier tests and failed under reordering), and stop scheduling the
+    delayed add_compute connection during tests: the timer leaked real
+    connection attempts into other tests' event loops.
+
+diff --git a/gns3server/api/routes/controller/computes.py b/gns3server/api/routes/controller/computes.py
+index 796a7206..c8de19a5 100644
+--- a/gns3server/api/routes/controller/computes.py
++++ b/gns3server/api/routes/controller/computes.py
+@@ -26,6 +26,7 @@ from fastapi import APIRouter, Body, Depends, Query, status
+ import gns3server.db.models as models
+ from gns3server import schemas
+ from gns3server.controller import Controller
++from gns3server.controller.controller_error import ControllerBadRequestError, ControllerError
+ from gns3server.db.repositories.computes import ComputesRepository
+ from gns3server.db.repositories.rbac import RbacRepository
+ from gns3server.services.computes import ComputesService
+@@ -80,6 +81,42 @@ async def connect_compute(compute_id: Union[str, UUID]) -> None:
+         await compute.connect(report_failed_connection=True)
+ 
+ 
++@router.post(
++    "/{compute_id}/disconnect",
++    status_code=status.HTTP_204_NO_CONTENT,
++    responses={409: {"model": schemas.ErrorMessage, "description": "Compute is used by opened projects"}},
++    # dependencies=[Depends(has_privilege("Compute.Audit"))]  # FIXME: this is a temporary workaround due to a bug in the web-ui
++)
++async def disconnect_compute(compute_id: Union[str, UUID], force: Optional[bool] = False) -> None:
++    """
++    Disconnect from a compute on the controller.
++
++    The compute is not reconnected until an explicit connection is requested,
++    or the controller restarts with auto_connect enabled for this compute.
++
++    Rejected with 409 when an opened project still uses the compute, unless
++    force is true. Forcing does not stop anything on the compute: only the
++    controller-side control channel (notification stream and HTTP session) is
++    torn down, nodes keep running unmanaged.
++
++    Required privilege: Compute.Audit
++    """
++
++    if str(compute_id) == "local":
++        raise ControllerBadRequestError("Cannot disconnect the local compute")
++    controller = Controller.instance()
++    compute = controller.get_compute(str(compute_id))
++    if not force:
++        open_projects = controller.get_compute_open_projects(compute)
++        if open_projects:
++            project_names = ", ".join(f"'{project.name}'" for project in open_projects)
++            raise ControllerError(
++                f"Compute '{compute_id}' is used by opened projects ({project_names}), "
++                "disconnect anyway with force=true"
++            )
++    await compute.disconnect()
++
++
+ @router.get(
+     "/{compute_id}",
+     response_model=schemas.Compute,
+diff --git a/gns3server/controller/__init__.py b/gns3server/controller/__init__.py
+index 075256d7..b7fe5b4c 100644
+--- a/gns3server/controller/__init__.py
++++ b/gns3server/controller/__init__.py
+@@ -201,10 +201,12 @@ class Controller:
+         if computes:
+             for c in computes:
+                 try:
+-                    # FIXME: Task exception was never retrieved
+                     await self.add_compute(
+                         compute_id=str(c.compute_id),
+-                        connect=False,
++                        # computes flagged auto_connect connect in the
++                        # background, one second after the controller started
++                        connect=c.auto_connect,
++                        wait_connection=False,
+                         **c.dict(exclude_unset=True, exclude={"compute_id", "created_at", "updated_at"}),
+                         ssl_context=self._ssl_context,
+                     )
+@@ -625,9 +627,12 @@ class Controller:
+             if connect:
+                 if wait_connection:
+                     await compute.connect()
+-                else:
+-                    # call compute.connect() later to give time to the controller to be fully started
+-                    asyncio.get_event_loop().call_later(1, lambda: asyncio.ensure_future(compute.connect()))
++                elif not hasattr(sys, "_called_from_test"):
++                    # connect in the background to give time to the controller to be fully
++                    # started; goes through _try_reconnect so connection errors don't die
++                    # as unretrieved task exceptions. Skipped during tests: the timer would
++                    # leak the connection attempt into another test's event loop.
++                    asyncio.get_event_loop().call_later(1, lambda: asyncio.ensure_future(compute._try_reconnect()))
+             self.notification.controller_emit("compute.created", compute.asdict())
+             return compute
+         else:
+@@ -645,6 +650,17 @@ class Controller:
+             if compute in project.computes:
+                 await project.close()
+ 
++    def get_compute_open_projects(self, compute):
++        """
++        Return the opened projects using a compute.
++
++        :returns: List of opened projects
++        """
++
++        return [
++            project for project in self._projects.values() if compute in project.computes and project.status == "opened"
++        ]
++
+     def compute_has_open_project(self, compute):
+         """
+         Check is compute has a project opened.
+@@ -652,10 +668,7 @@ class Controller:
+         :returns: True if a project is open
+         """
+ 
+-        for project in self._projects.values():
+-            if compute in project.computes and project.status == "opened":
+-                return True
+-        return False
++        return bool(self.get_compute_open_projects(compute))
+ 
+     async def delete_compute(self, compute_id):
+         """
+diff --git a/gns3server/controller/compute.py b/gns3server/controller/compute.py
+index bd0cf01d..aa2095ec 100644
+--- a/gns3server/controller/compute.py
++++ b/gns3server/controller/compute.py
+@@ -61,6 +61,7 @@ class Compute:
+         name=None,
+         console_host=None,
+         ssl_context=None,
++        auto_connect=False,
+     ):
+         self._http_session = None
+         assert controller is not None
+@@ -80,6 +81,11 @@ class Compute:
+         self._connected = False
+         self._notifications = None
+         self._closed = False  # Close mean we are destroying the compute node
++        # True when the user asked to disconnect: blocks every reconnection
++        # path (retry backoff, notification stream reconnect, lazy connect)
++        # until connect() is called again
++        self._manual_disconnect = False
++        self._auto_connect = auto_connect
+         self._controller = controller
+         self._set_auth(user, password)
+         self._cpu_usage_percent = 0
+@@ -154,6 +160,11 @@ class Compute:
+ 
+     async def update(self, **kwargs):
+ 
++        if "auto_connect" in kwargs:
++            # stored separately from the generic attributes below so that
++            # asdict() reports it (it is persisted in the database, the
++            # controller-side copy is only a mirror for notifications)
++            self._auto_connect = kwargs.pop("auto_connect")
+         for kw in kwargs:
+             if kw not in ("user", "password"):
+                 setattr(self, kw, kwargs[kw])
+@@ -323,6 +334,7 @@ class Compute:
+             "host": self._host,
+             "port": self._port,
+             "user": self._user,
++            "auto_connect": self._auto_connect,
+             "connected": self._connected,
+             "cpu_usage_percent": self._cpu_usage_percent,
+             "memory_usage_percent": self._memory_usage_percent,
+@@ -368,7 +380,9 @@ class Compute:
+         :param params: Optional dict of query parameters to append to the URL
+         """
+ 
+-        if not self._connected and not dont_connect:
++        # a manually disconnected compute is not lazily reconnected either: the
++        # request fails like for any unreachable compute
++        if not self._connected and not self._manual_disconnect and not dont_connect:
+             if self._id == "vm" and not self._controller.gns3vm.running:
+                 await self._controller.gns3vm.start()
+             await self.connect()
+@@ -381,6 +395,9 @@ class Compute:
+         """
+         We catch error during reconnect
+         """
++
++        if self._manual_disconnect:
++            return  # stop reconnecting, the compute was manually disconnected
+         try:
+             await self.connect()
+         except ControllerError:
+@@ -413,6 +430,8 @@ class Compute:
+         Check if remote server is accessible
+         """
+ 
++        # an explicit connection request cancels a manual disconnect
++        self._manual_disconnect = False
+         if not self._connected and not self._closed and self.host:
+             try:
+                 log.info(f"Connecting to compute '{self._id}'")
+@@ -474,6 +493,31 @@ class Compute:
+             self._last_error = None
+             self._controller.notification.controller_emit("compute.updated", self.asdict())
+ 
++    async def disconnect(self):
++        """
++        Manually disconnect from the compute. The controller stops reconnecting
++        (retry backoff, notification stream reconnect and lazy connection are
++        all blocked) until connect() is called again, or the controller
++        restarts with auto_connect enabled for this compute.
++        """
++
++        self._manual_disconnect = True
++        if self._notifications:
++            # Cancelling the notification task runs its finally block: the
++            # compute is marked disconnected and clients are notified. The
++            # flag set above keeps it from scheduling a reconnection.
++            self._notifications.cancel()
++            try:
++                await self._notifications
++            except asyncio.CancelledError:
++                pass
++            self._notifications = None
++        if self._http_session and not self._http_session.closed:
++            await self._http_session.close()
++        if self._connected:
++            self._connected = False
++            self._controller.notification.controller_emit("compute.updated", self.asdict())
++
+     async def _connect_notification(self):
+         """
+         Connect to the notification stream
+@@ -526,9 +570,12 @@ class Compute:
+             # Try to reconnect after 1 second if server unavailable only if not during tests (otherwise we create a resources usage bomb)
+             from gns3server.api.server import app
+ 
+-            if not app.state.exiting and not hasattr(sys, "_called_from_test"):
++            # The reconnection goes through _try_reconnect (not connect
++            # directly) so that a manual disconnect landing within the 1
++            # second window is still honoured by the time the timer fires
++            if not self._manual_disconnect and not app.state.exiting and not hasattr(sys, "_called_from_test"):
+                 log.info(f"Reconnecting to compute '{self._id}' WebSocket '{ws_url}'")
+-                asyncio.get_event_loop().call_later(1, lambda: asyncio.ensure_future(self.connect()))
++                asyncio.get_event_loop().call_later(1, lambda: asyncio.ensure_future(self._try_reconnect()))
+ 
+     def _getUrl(self, path):
+         host = self._host
+diff --git a/gns3server/db/models/computes.py b/gns3server/db/models/computes.py
+index 4561e9f8..a2524f49 100644
+--- a/gns3server/db/models/computes.py
++++ b/gns3server/db/models/computes.py
+@@ -15,7 +15,7 @@
+ # You should have received a copy of the GNU General Public License
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+-from sqlalchemy import Column, Integer, String
++from sqlalchemy import Boolean, Column, Integer, String, false
+ 
+ from .base import GUID, BaseTable
+ 
+@@ -30,3 +30,4 @@ class Compute(BaseTable):
+     port = Column(Integer)
+     user = Column(String)
+     password = Column(String)
++    auto_connect = Column(Boolean, nullable=False, server_default=false())
+diff --git a/gns3server/db/repositories/computes.py b/gns3server/db/repositories/computes.py
+index 3ccbc668..3b3c9971 100644
+--- a/gns3server/db/repositories/computes.py
++++ b/gns3server/db/repositories/computes.py
+@@ -61,6 +61,7 @@ class ComputesRepository(BaseRepository):
+             port=compute_create.port,
+             user=compute_create.user,
+             password=compute_create.password.get_secret_value() if compute_create.password else None,
++            auto_connect=bool(compute_create.auto_connect),
+         )
+         self._db_session.add(db_compute)
+         await self._db_session.commit()
+@@ -74,6 +75,9 @@ class ComputesRepository(BaseRepository):
+         update_values = compute_update.model_dump(exclude_unset=True)
+         if compute_update.password is not None:
+             update_values["password"] = compute_update.password.get_secret_value()
++        if update_values.get("auto_connect") is None:
++            # the column is NOT NULL: treat an explicit null as "leave unchanged"
++            update_values.pop("auto_connect", None)
+ 
+         query = update(models.Compute).where(models.Compute.compute_id == compute_id).values(update_values)
+ 
+diff --git a/gns3server/db_migrations/versions/f7d3a9c2e5b1_add_auto_connect_to_computes.py b/gns3server/db_migrations/versions/f7d3a9c2e5b1_add_auto_connect_to_computes.py
+new file mode 100644
+index 00000000..f114e7be
+--- /dev/null
++++ b/gns3server/db_migrations/versions/f7d3a9c2e5b1_add_auto_connect_to_computes.py
+@@ -0,0 +1,26 @@
++"""add auto_connect to computes table
++
++Revision ID: f7d3a9c2e5b1
++Revises: d9e8a2b7c401
++Create Date: 2026-10-15 10:00:00.000000
++
++"""
++
++import sqlalchemy as sa
++from alembic import op
++
++# revision identifiers, used by Alembic.
++revision = "f7d3a9c2e5b1"
++down_revision = "d9e8a2b7c401"
++branch_labels = None
++depends_on = None
++
++
++def upgrade() -> None:
++
++    op.add_column("computes", sa.Column("auto_connect", sa.Boolean(), nullable=False, server_default=sa.false()))
++
++
++def downgrade() -> None:
++
++    op.drop_column("computes", "auto_connect")
+diff --git a/gns3server/schemas/controller/computes.py b/gns3server/schemas/controller/computes.py
+index 229a9766..f7c1fa79 100644
+--- a/gns3server/schemas/controller/computes.py
++++ b/gns3server/schemas/controller/computes.py
+@@ -49,6 +49,9 @@ class ComputeBase(BaseModel):
+     user: Optional[str] = None
+     password: Optional[SecretStr] = None
+     name: Optional[str] = None
++    auto_connect: Optional[bool] = Field(
++        False, description="Whether to automatically connect to the compute when the controller starts"
++    )
+     model_config = ConfigDict(use_enum_values=True)
+ 
+ 
+@@ -87,6 +90,7 @@ class ComputeUpdate(ComputeBase):
+ 
+     user: Optional[str] = None
+     password: Optional[SecretStr] = None
++    auto_connect: Optional[bool] = None  # no default: update schemas must not publish defaults
+     model_config = ConfigDict(
+         json_schema_extra={
+             "example": {
+@@ -107,6 +111,8 @@ class Compute(DateTimeModelMixin, ComputeBase):
+     port: int = Field(..., gt=0, le=65535)
+     compute_id: Union[str, uuid.UUID]
+     name: str
++    # defaulted: topology files and the local compute dict may not carry it
++    auto_connect: bool = False
+     connected: Optional[bool] = Field(None, description="Whether the controller is connected to the compute or not")
+     cpu_usage_percent: Optional[float] = Field(None, description="CPU usage of the compute", ge=0, le=100)
+     memory_usage_percent: Optional[float] = Field(None, description="Memory usage of the compute", ge=0, le=100)
+diff --git a/gns3server/services/computes.py b/gns3server/services/computes.py
+index ab328ca0..1b5e66e2 100644
+--- a/gns3server/services/computes.py
++++ b/gns3server/services/computes.py
+@@ -15,19 +15,44 @@
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+ 
++import asyncio
+ from typing import List, Union
+ from uuid import UUID
+ 
+ import gns3server.db.models as models
+ from gns3server import schemas
+ from gns3server.controller import Controller
++from gns3server.controller.compute import Compute
+ from gns3server.controller.controller_error import (
+     ControllerBadRequestError,
++    ControllerError,
+     ControllerNotFoundError,
+ )
+ from gns3server.db.repositories.computes import ComputesRepository
+ 
+ 
++async def _connect_in_background(compute: Compute) -> None:
++
++    try:
++        await compute.connect()
++    except ControllerError:
++        # the connection failure is reported via compute.updated and the
++        # retry backoff is already scheduled by the connect attempt itself
++        pass
++
++
++# fire-and-forget background connections: keep a reference so the task is not
++# garbage-collected mid-flight, drop it once it is done
++_background_connect_tasks: set[asyncio.Task] = set()
++
++
++def _schedule_background_connect(compute: Compute) -> None:
++
++    task = asyncio.ensure_future(_connect_in_background(compute))
++    _background_connect_tasks.add(task)
++    task.add_done_callback(_background_connect_tasks.discard)
++
++
+ class ComputesService:
+     def __init__(self, computes_repo: ComputesRepository):
+ 
+@@ -50,6 +75,13 @@ class ComputesService:
+             **compute_create.model_dump(exclude_unset=True, exclude={"compute_id"}),
+         )
+         self._controller.notification.controller_emit("compute.created", compute.asdict())
++
++        # auto_connect connects in the background — including when the compute
++        # was already registered on the controller — so the create request
++        # never waits for, or fails on, the connection. An explicit
++        # ?connect=true keeps its synchronous behavior via add_compute.
++        if compute_create.auto_connect and not compute.connected:
++            _schedule_background_connect(compute)
+         return db_compute
+ 
+     async def get_compute(self, compute_id: Union[str, UUID]) -> Union[models.Compute, dict]:
+@@ -68,11 +100,26 @@ class ComputesService:
+     ) -> models.Compute:
+ 
+         compute = self._controller.get_compute(str(compute_id))
++
++        # remember the previous value to detect the false -> true transition below
++        previous_auto_connect = False
++        if compute_update.auto_connect:
++            previous_db_compute = await self._computes_repo.get_compute(compute_id)
++            if previous_db_compute:
++                previous_auto_connect = bool(previous_db_compute.auto_connect)
++
+         await compute.update(**compute_update.model_dump(exclude_unset=True))
+         db_compute = await self._computes_repo.update_compute(compute_id, compute_update)
+         if not db_compute:
+             raise ControllerNotFoundError(f"Compute '{compute_id}' not found")
+         self._controller.notification.controller_emit("compute.updated", compute.asdict())
++
++        # Enabling auto_connect (false -> true) connects in the background: the
++        # request returns immediately and the connection status flips via
++        # compute.updated. The true -> true case is skipped on purpose so that
++        # saving an edit does not reconnect a manually disconnected compute.
++        if compute_update.auto_connect and not previous_auto_connect and not compute.connected:
++            _schedule_background_connect(compute)
+         return db_compute
+ 
+     async def delete_compute(self, compute_id: Union[str, UUID]) -> None:
+diff --git a/tests/api/routes/controller/test_computes.py b/tests/api/routes/controller/test_computes.py
+index 0558a62d..08e2ec7d 100644
+--- a/tests/api/routes/controller/test_computes.py
++++ b/tests/api/routes/controller/test_computes.py
+@@ -15,6 +15,7 @@
+ # You should have received a copy of the GNU General Public License
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
++import asyncio
+ import uuid
+ from unittest.mock import MagicMock, patch
+ 
+@@ -22,6 +23,7 @@ import pytest
+ from fastapi import FastAPI, status
+ from httpx import AsyncClient
+ 
++from gns3server.controller import Controller
+ from gns3server.schemas.controller.computes import Compute
+ 
+ pytestmark = pytest.mark.asyncio
+@@ -62,7 +64,7 @@ class TestComputeRoutes:
+         for param, value in params.items():
+             assert response.json()[param] == value
+ 
+-    async def test_compute_list(self, app: FastAPI, client: AsyncClient) -> None:
++    async def test_compute_list(self, app: FastAPI, client: AsyncClient, test_compute: Compute) -> None:
+ 
+         response = await client.get(app.url_path_for("get_computes"))
+         assert response.status_code == status.HTTP_200_OK
+@@ -263,3 +265,152 @@ class TestComputeFeatures:
+     #         response = await client.post(app.url_path_for("autoidlepc", compute_id=compute_id) + "/auto_idlepc", json=params)
+     #         assert mock.called
+     #         assert response.status_code == status.HTTP_200_OK
++
++
++class TestComputeAutoConnect:
++    async def test_compute_create_with_auto_connect(self, app: FastAPI, client: AsyncClient) -> None:
++
++        params = {
++            "protocol": "http",
++            "host": "localhost",
++            "port": 84,
++            "user": "julien",
++            "password": "secure",
++            "auto_connect": True,
++        }
++
++        with patch("gns3server.controller.compute.Compute.connect", new_callable=AsyncioMagicMock) as connect_mock:
++            response = await client.post(app.url_path_for("create_compute"), json=params)
++            assert response.status_code == status.HTTP_201_CREATED
++            assert response.json()["auto_connect"] is True
++            # the create request returns immediately, the connection happens
++            # in the background
++            await asyncio.sleep(0)
++            assert connect_mock.call_count == 1
++
++        # persisted, not just echoed back
++        compute_id = response.json()["compute_id"]
++        response = await client.get(app.url_path_for("get_compute", compute_id=compute_id))
++        assert response.status_code == status.HTTP_200_OK
++        assert response.json()["auto_connect"] is True
++
++    async def test_compute_create_auto_connect_defaults_to_false(self, app: FastAPI, client: AsyncClient) -> None:
++
++        params = {"protocol": "http", "host": "localhost", "port": 85, "user": "julien", "password": "secure"}
++
++        response = await client.post(app.url_path_for("create_compute"), json=params)
++        assert response.status_code == status.HTTP_201_CREATED
++        assert response.json()["auto_connect"] is False
++
++    async def test_compute_update_enable_auto_connect_connects(self, app: FastAPI, client: AsyncClient) -> None:
++
++        params = {"protocol": "http", "host": "localhost", "port": 86, "name": "auto-connect-target"}
++        response = await client.post(app.url_path_for("create_compute"), json=params)
++        assert response.status_code == status.HTTP_201_CREATED
++        compute_id = response.json()["compute_id"]
++
++        with patch("gns3server.controller.compute.Compute.connect", new_callable=AsyncioMagicMock) as connect_mock:
++            response = await client.put(
++                app.url_path_for("update_compute", compute_id=compute_id), json={"auto_connect": True}
++            )
++            assert response.status_code == status.HTTP_200_OK
++            assert response.json()["auto_connect"] is True
++            await asyncio.sleep(0)  # give the background connection task a tick
++            assert connect_mock.call_count == 1
++
++            # saving the same value again must not reconnect: a manual
++            # disconnect has to survive an unrelated edit of the compute
++            response = await client.put(
++                app.url_path_for("update_compute", compute_id=compute_id), json={"auto_connect": True}
++            )
++            assert response.status_code == status.HTTP_200_OK
++            await asyncio.sleep(0)
++            assert connect_mock.call_count == 1
++
++    async def test_compute_update_preserves_auto_connect(self, app: FastAPI, client: AsyncClient) -> None:
++
++        params = {
++            "protocol": "http",
++            "host": "localhost",
++            "port": 87,
++            "user": "julien",
++            "password": "secure",
++            "auto_connect": True,
++        }
++        response = await client.post(app.url_path_for("create_compute"), json=params)
++        assert response.status_code == status.HTTP_201_CREATED
++        compute_id = response.json()["compute_id"]
++
++        response = await client.put(app.url_path_for("update_compute", compute_id=compute_id), json={"name": "renamed"})
++        assert response.status_code == status.HTTP_200_OK
++        assert response.json()["name"] == "renamed"
++
++        response = await client.get(app.url_path_for("get_compute", compute_id=compute_id))
++        assert response.status_code == status.HTTP_200_OK
++        assert response.json()["auto_connect"] is True
++
++
++class TestComputeDisconnect:
++    async def test_compute_disconnect(self, app: FastAPI, client: AsyncClient) -> None:
++
++        params = {"protocol": "http", "host": "localhost", "port": 88, "user": "julien", "password": "secure"}
++        response = await client.post(app.url_path_for("create_compute"), json=params)
++        assert response.status_code == status.HTTP_201_CREATED
++        compute_id = response.json()["compute_id"]
++
++        compute = Controller.instance().get_compute(compute_id)
++        compute._connected = True
++
++        response = await client.post(app.url_path_for("disconnect_compute", compute_id=compute_id))
++        assert response.status_code == status.HTTP_204_NO_CONTENT
++        assert compute._manual_disconnect is True
++        assert compute.connected is False
++
++    async def test_compute_disconnect_in_use_rejected(self, app: FastAPI, client: AsyncClient) -> None:
++
++        params = {"protocol": "http", "host": "localhost", "port": 89, "user": "julien", "password": "secure"}
++        response = await client.post(app.url_path_for("create_compute"), json=params)
++        assert response.status_code == status.HTTP_201_CREATED
++        compute_id = response.json()["compute_id"]
++
++        compute = Controller.instance().get_compute(compute_id)
++        compute._connected = True
++
++        open_project = MagicMock()
++        open_project.name = "project-using-the-compute"
++        with patch("gns3server.controller.Controller.get_compute_open_projects", return_value=[open_project]):
++            response = await client.post(app.url_path_for("disconnect_compute", compute_id=compute_id))
++        assert response.status_code == status.HTTP_409_CONFLICT
++        # the offending project names are reported to the client
++        assert "project-using-the-compute" in response.json()["message"]
++        # the compute is left untouched
++        assert compute._manual_disconnect is False
++        assert compute.connected is True
++
++    async def test_compute_disconnect_in_use_forced(self, app: FastAPI, client: AsyncClient) -> None:
++
++        params = {"protocol": "http", "host": "localhost", "port": 90, "user": "julien", "password": "secure"}
++        response = await client.post(app.url_path_for("create_compute"), json=params)
++        assert response.status_code == status.HTTP_201_CREATED
++        compute_id = response.json()["compute_id"]
++
++        compute = Controller.instance().get_compute(compute_id)
++        compute._connected = True
++
++        with patch("gns3server.controller.Controller.get_compute_open_projects", return_value=[MagicMock()]):
++            response = await client.post(
++                app.url_path_for("disconnect_compute", compute_id=compute_id), params={"force": True}
++            )
++        assert response.status_code == status.HTTP_204_NO_CONTENT
++        assert compute._manual_disconnect is True
++        assert compute.connected is False
++
++    async def test_compute_disconnect_local_rejected(self, app: FastAPI, client: AsyncClient) -> None:
++
++        response = await client.post(app.url_path_for("disconnect_compute", compute_id="local"))
++        assert response.status_code == status.HTTP_400_BAD_REQUEST
++
++    async def test_compute_disconnect_unknown(self, app: FastAPI, client: AsyncClient) -> None:
++
++        response = await client.post(app.url_path_for("disconnect_compute", compute_id=str(uuid.uuid4())))
++        assert response.status_code == status.HTTP_404_NOT_FOUND
+diff --git a/tests/controller/test_compute.py b/tests/controller/test_compute.py
+index 6a8f3b27..66fc638f 100644
+--- a/tests/controller/test_compute.py
++++ b/tests/controller/test_compute.py
+@@ -29,11 +29,13 @@ from gns3server.api.server import app as gns3_app
+ from gns3server.controller.compute import Compute
+ from gns3server.controller.controller_error import (
+     ComputeConflictError,
++    ComputeError,
+     ControllerError,
+     ControllerNotFoundError,
+     ControllerUnauthorizedError,
+ )
+ from gns3server.controller.project import Project
++from gns3server.version import __version__
+ from tests.utils import AsyncioMagicMock, asyncio_patch
+ 
+ 
+@@ -376,6 +378,7 @@ async def test_json(compute):
+         "host": "example.com",
+         "port": 84,
+         "user": "test",
++        "auto_connect": False,
+         "cpu_usage_percent": 0,
+         "memory_usage_percent": 0,
+         "disk_usage_percent": 0,
+@@ -696,3 +699,87 @@ async def test_connect_http_error_notifies_schedules_retry_and_raises(compute, m
+     actions = [c.args[0] for c in emit_mock.call_args_list]
+     assert "compute.updated" in actions
+     assert scheduled_delays == [5]  # first exponential backoff delay
++
++
++def test_auto_connect_constructor_default(controller):
++
++    assert Compute("default_auto_connect", controller=controller).asdict()["auto_connect"] is False
++    assert Compute("enabled_auto_connect", controller=controller, auto_connect=True).asdict()["auto_connect"] is True
++
++
++@pytest.mark.asyncio
++async def test_update_auto_connect(compute, controller):
++
++    compute._controller._notification = MagicMock()
++    compute._controller.save = MagicMock()
++
++    assert compute.asdict()["auto_connect"] is False
++    await compute.update(auto_connect=True)
++    assert compute.asdict()["auto_connect"] is True
++    controller.notification.controller_emit.assert_called_with("compute.updated", compute.asdict())
++
++
++@pytest.mark.asyncio
++async def test_disconnect_stops_the_notification_stream(compute, controller):
++    """
++    disconnect() tears down the notification stream, marks the compute
++    disconnected and notifies clients — without scheduling any reconnection.
++    """
++
++    assert compute.connected is True
++
++    compute._controller._notification = MagicMock()
++    started = asyncio.Event()
++
++    async def fake_notification_stream():
++        started.set()
++        try:
++            await asyncio.Event().wait()
++        except asyncio.CancelledError:
++            raise
++
++    compute._notifications = asyncio.gather(asyncio.create_task(fake_notification_stream()))
++    await started.wait()
++
++    await compute.disconnect()
++    assert compute._manual_disconnect is True
++    assert compute.connected is False
++    assert compute._notifications is None
++    compute._controller._notification.controller_emit.assert_called_with("compute.updated", compute.asdict())
++
++
++@pytest.mark.asyncio
++async def test_manual_disconnect_blocks_reconnect_and_lazy_connect(compute):
++    """
++    After a manual disconnect no reconnection path may bring the compute back:
++    not the retry backoff, not the lazy connection of http_query.
++    """
++
++    await compute.disconnect()
++
++    with patch("gns3server.controller.compute.Compute.connect", new_callable=AsyncioMagicMock) as connect_mock:
++        await compute._try_reconnect()
++        connect_mock.assert_not_called()
++
++        with pytest.raises(ComputeError):
++            await compute.http_query("GET", "/capabilities")
++        connect_mock.assert_not_called()
++
++
++@pytest.mark.asyncio
++async def test_connect_cancels_manual_disconnect(compute, monkeypatch):
++
++    compute._manual_disconnect = True
++
++    async def fake_capabilities(method, path, **kwargs):
++        return SimpleNamespace(json={"version": __version__})
++
++    async def fake_notification_stream():
++        return None
++
++    monkeypatch.setattr(compute, "_run_http_query", fake_capabilities)
++    monkeypatch.setattr(compute, "_connect_notification", fake_notification_stream)
++
++    await compute.connect()
++    assert compute._manual_disconnect is False
++    assert compute.connected is True
