@@ -876,6 +876,27 @@ for wrp in qemu_wrapper qemu_wrapper_telnet iol_wrapper dynamips_wrapper docker_
     fi
 done
 
+# Issue #66: Cold-Disk Bulk Startup Console Socket Race Guard
+if [ -f /opt/unetlab/wrappers/qemu_wrapper_telnet ] && [ ! -f /opt/unetlab/wrappers/qemu_wrapper_telnet.orig ]; then
+    cp -p /opt/unetlab/wrappers/qemu_wrapper_telnet /opt/unetlab/wrappers/qemu_wrapper_telnet.orig
+    cat << 'EOF_TELNET_WAIT' > /opt/unetlab/wrappers/qemu_wrapper_telnet
+#!/bin/bash
+# AzamLabs Issue #66: Intelligent Console Socket Readiness Polling
+for arg in "$@"; do
+    if [[ "$arg" == *.sock ]]; then
+        for i in {1..150}; do
+            [ -S "$arg" ] && break
+            sleep 0.1
+        done
+        sleep 0.2
+        break
+    fi
+done
+exec /opt/unetlab/wrappers/qemu_wrapper_telnet.orig "$@"
+EOF_TELNET_WAIT
+    chmod 4755 /opt/unetlab/wrappers/qemu_wrapper_telnet
+fi
+
 chmod 755 /opt/unetlab/scripts/* 2>/dev/null || true
 chmod -R 777 /opt/unetlab/tmp 2>/dev/null || true
 chmod 777 /tmp/netio* 2>/dev/null || true

@@ -1795,24 +1795,56 @@
         setTimeout(cleanupOrphanGlowFilters, 100);
       }
     }, true);
-  /* ── Issue #45 Hardening: User Online/Idle/Offline Status Indicators ── */
+  /* ── Issue #45 & Issue #65 Hardening: User Online/Idle/Offline Status & Log Filters ── */
   (function initUserStatusBadgeHook() {
     var style = document.createElement('style');
     style.id = 'azam-user-status-style';
     style.textContent = [
       '.azam-status-indicator { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; letter-spacing: 0.3px; }',
       '.azam-status-online { background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }',
-      '.azam-status-idle { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }',
+      '.azam-status-idle { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); }',
       '.azam-status-offline { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }',
       '.azam-status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }',
       '.azam-status-online .azam-status-dot { background: #22c55e; box-shadow: 0 0 8px #22c55e; animation: azamPulseGreen 2s infinite; }',
-      '.azam-status-idle .azam-status-dot { background: #38bdf8; box-shadow: 0 0 6px #38bdf8; }',
+      '.azam-status-idle .azam-status-dot { background: #f59e0b; box-shadow: 0 0 7px #f59e0b; animation: azamPulseAmber 2.5s infinite; }',
       '.azam-status-offline .azam-status-dot { background: #ef4444; }',
-      '@keyframes azamPulseGreen { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.15); } }'
+      '@keyframes azamPulseGreen { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.15); } }',
+      '@keyframes azamPulseAmber { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.55; transform: scale(1.12); } }'
     ].join('\n');
     if (!document.getElementById('azam-user-status-style') && document.head) {
       document.head.appendChild(style);
     }
+
+    // Issue #65: Real-time Inactivity Idle Tracking (5 minutes = 300,000 ms)
+    var IDLE_TIMEOUT_MS = 300000;
+    var idleTimer = null;
+    var isCurrentUserIdle = false;
+
+    function resetUserIdleTimer() {
+      if (isCurrentUserIdle) {
+        isCurrentUserIdle = false;
+        broadcastCurrentUserActivity('online');
+      }
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(function () {
+        isCurrentUserIdle = true;
+        broadcastCurrentUserActivity('idle');
+      }, IDLE_TIMEOUT_MS);
+    }
+
+    function broadcastCurrentUserActivity(state) {
+      var selfBadges = document.querySelectorAll('.current-user-status, #user_profile_status, .header-user-status, .user-badge-self');
+      selfBadges.forEach(function (badge) {
+        badge.innerHTML = state === 'idle'
+          ? '<span class="azam-status-indicator azam-status-idle" title="User is currently Idle / Inactive (5m+)"><span class="azam-status-dot"></span> Idle 🟡</span>'
+          : '<span class="azam-status-indicator azam-status-online" title="User is currently Online and Active"><span class="azam-status-dot"></span> Online</span>';
+      });
+    }
+
+    ['mousemove', 'keydown', 'mousedown', 'scroll', 'touchstart'].forEach(function (evt) {
+      window.addEventListener(evt, resetUserIdleTimer, { passive: true });
+    });
+    resetUserIdleTimer();
 
     function decorateUserStatuses() {
       try {
@@ -1824,7 +1856,7 @@
           if (text === 'active' || text === 'online' || text === '1' || cell.classList.contains('status-online')) {
             badgeHtml = '<span class="azam-status-indicator azam-status-online" title="User is currently Online and Active"><span class="azam-status-dot"></span> Online</span>';
           } else if (text === 'idle' || text === 'away' || cell.classList.contains('status-idle')) {
-            badgeHtml = '<span class="azam-status-indicator azam-status-idle" title="User is Idle / Inactive"><span class="azam-status-dot"></span> Idle</span>';
+            badgeHtml = '<span class="azam-status-indicator azam-status-idle" title="User is Idle / Inactive (5m+)"><span class="azam-status-dot"></span> Idle 🟡</span>';
           } else if (text === 'offline' || text === 'disabled' || text === '0' || cell.classList.contains('status-offline')) {
             badgeHtml = '<span class="azam-status-indicator azam-status-offline" title="User is Offline"><span class="azam-status-dot"></span> Offline</span>';
           }
@@ -1838,13 +1870,43 @@
       }
     }
 
+    // Issue #65: Live Session Log Search Filter
+    function setupLogSearchFilter() {
+      try {
+        var logTable = document.querySelector('#table_logs, .table-logs, [data-table="logs"]');
+        if (!logTable || document.getElementById('azam-log-search-input')) return;
+        var wrapper = logTable.closest('.panel, .card, .view-content, .table-responsive') || logTable.parentNode;
+        var searchDiv = document.createElement('div');
+        searchDiv.id = 'azam-log-search-wrapper';
+        searchDiv.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:12px;';
+        searchDiv.innerHTML = '<i class="fa fa-search" style="color:#94a3b8;"></i><input id="azam-log-search-input" type="text" placeholder="Filter session logs by user, action, IP, or timestamp..." style="background:rgba(15,23,42,0.6);border:1px solid #334155;border-radius:6px;padding:6px 12px;color:#f1f5f9;font-size:12px;width:100%;max-width:400px;outline:none;">';
+        wrapper.insertBefore(searchDiv, logTable);
+
+        var input = document.getElementById('azam-log-search-input');
+        input.addEventListener('input', function () {
+          var query = (input.value || '').toLowerCase().trim();
+          var rows = logTable.querySelectorAll('tbody tr');
+          rows.forEach(function (row) {
+            var rowText = (row.textContent || '').toLowerCase();
+            row.style.display = (!query || rowText.indexOf(query) !== -1) ? '' : 'none';
+          });
+        });
+      } catch (e) {
+        // Non-fatal
+      }
+    }
+
     document.addEventListener('click', function (ev) {
       if (ev.target && ev.target.closest && ev.target.closest('a[href*="users"], .nav-users, #menu_users')) {
         setTimeout(decorateUserStatuses, 250);
         setTimeout(decorateUserStatuses, 800);
       }
+      if (ev.target && ev.target.closest && ev.target.closest('a[href*="log"], .nav-logs, #menu_logs')) {
+        setTimeout(setupLogSearchFilter, 300);
+      }
     }, true);
     setInterval(decorateUserStatuses, 2500);
+    setInterval(setupLogSearchFilter, 4000);
   })();
 
   /* ── Issue #53 Hardening: Node Quick Buttons Hit-Box Precision & Anti-Obstruction ── */
@@ -1997,6 +2059,90 @@
 
     document.addEventListener('DOMContentLoaded', ensureWorkspaceIndexVisibility);
     setTimeout(ensureWorkspaceIndexVisibility, 500);
+  })();
+
+  /* ── Issue #67 Hardening: Network Cloud Connection Resume & Full Link State ── */
+  (function initCloudLinkContextMenuHook() {
+    function restoreCloudLinkMenuOptions() {
+      try {
+        var menu = document.querySelector('#context-menu, .canvas-context-menu, .context-menu-list');
+        if (!menu) return;
+        var activeTarget = window.activeContextTarget || document.querySelector('.context-menu-active-target, g.link.selected, path.link.selected');
+        if (!activeTarget) return;
+
+        // Check if link is connected to a network cloud (pnet / cloud bridge)
+        var isCloud = false;
+        var src = (activeTarget.getAttribute('data-source') || '').toLowerCase();
+        var dst = (activeTarget.getAttribute('data-target') || '').toLowerCase();
+        var classes = (activeTarget.getAttribute('class') || '').toLowerCase();
+        if (src.indexOf('pnet') !== -1 || dst.indexOf('pnet') !== -1 || src.indexOf('cloud') !== -1 || dst.indexOf('cloud') !== -1 || classes.indexOf('cloud') !== -1) {
+          isCloud = true;
+        }
+
+        if (isCloud) {
+          var items = menu.querySelectorAll('li, a, .context-menu-item');
+          items.forEach(function (it) {
+            var text = (it.textContent || '').toLowerCase();
+            if (it.style.display === 'none' && (text.indexOf('resume') !== -1 || text.indexOf('suspend') !== -1 || text.indexOf('full link') !== -1)) {
+              it.style.display = '';
+            }
+          });
+        }
+      } catch (e) {
+        // Non-fatal
+      }
+    }
+
+    document.addEventListener('contextmenu', function () {
+      setTimeout(restoreCloudLinkMenuOptions, 60);
+      setTimeout(restoreCloudLinkMenuOptions, 180);
+    }, true);
+  })();
+
+  /* ── Issue #68 Hardening: Unhide Links Action & Unlocked Icon Scaling ── */
+  (function initLinkVisibilityAndIconScalingHook() {
+    // 1. Remove minimum icon size barrier so icons scale down freely
+    var scaleStyle = document.createElement('style');
+    scaleStyle.id = 'azam-icon-scale-unbound-style';
+    scaleStyle.textContent = [
+      '.node-icon, .topology-node img, .topology-node svg, [data-node-icon] { min-width: 0 !important; min-height: 0 !important; }',
+      '#azam-toggle-links-btn { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px; background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; font-size: 11px; cursor: pointer; transition: all 0.15s ease; }',
+      '#azam-toggle-links-btn:hover { background: rgba(56, 189, 248, 0.15); border-color: #38bdf8; }'
+    ].join('\n');
+    if (!document.getElementById('azam-icon-scale-unbound-style') && document.head) {
+      document.head.appendChild(scaleStyle);
+    }
+
+    // 2. Inject Unhide Links button on canvas toolbar
+    function injectUnhideLinksButton() {
+      var toolbar = document.querySelector('#topology_toolbar, .canvas-toolbar, .topology-menu, #lab-actions');
+      if (!toolbar || document.getElementById('azam-toggle-links-btn')) return;
+
+      var btn = document.createElement('button');
+      btn.id = 'azam-toggle-links-btn';
+      btn.type = 'button';
+      btn.title = 'Unhide all canvas links or toggle link visibility';
+      btn.innerHTML = '<i class="fa fa-eye"></i> Unhide Links';
+      btn.onclick = function () {
+        var links = document.querySelectorAll('path.link, .link-line, g.link, [data-link-id], line');
+        var count = 0;
+        links.forEach(function (l) {
+          if (l.style.display === 'none' || l.style.visibility === 'hidden' || l.getAttribute('visibility') === 'hidden') {
+            l.style.display = '';
+            l.style.visibility = 'visible';
+            l.removeAttribute('visibility');
+            count++;
+          }
+        });
+        if (window.App && typeof window.App.toast === 'function') {
+          window.App.toast(count > 0 ? ('Restored visibility for ' + count + ' link(s)') : 'All links are visible', 'ok');
+        }
+      };
+      toolbar.appendChild(btn);
+    }
+
+    document.addEventListener('DOMContentLoaded', injectUnhideLinksButton);
+    setInterval(injectUnhideLinksButton, 3000);
   })();
 
   /* ── Register with App Router ───────────────────────────── */
