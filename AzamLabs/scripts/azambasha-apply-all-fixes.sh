@@ -190,7 +190,13 @@ case "$CHOICE" in
     19)
         # Check node role (Master vs Satellite)
         IS_SATELLITE=0
-        if [ -f /etc/azamlabs-role ] && grep -q "satellite" /etc/azamlabs-role 2>/dev/null; then
+        if [ -f /etc/azamlabs-role ] && grep -qi "satellite" /etc/azamlabs-role 2>/dev/null; then
+            IS_SATELLITE=1
+        elif [ -f /etc/pnetlab-role ] && grep -qi "satellite" /etc/pnetlab-role 2>/dev/null; then
+            IS_SATELLITE=1
+        elif systemctl is-active --quiet azamlabs-satd 2>/dev/null || systemctl is-active --quiet pnetlab-satd 2>/dev/null; then
+            IS_SATELLITE=1
+        elif [ -f /etc/azamlabs-satellite/satd.conf ] || [ -f /etc/pnetlab-satellite/satd.conf ] || [ -f /opt/unetlab/data/satellite.json ]; then
             IS_SATELLITE=1
         elif dpkg -s azamlabs-satellite >/dev/null 2>&1 && ! dpkg -s azamlabs >/dev/null 2>&1; then
             IS_SATELLITE=1
@@ -470,6 +476,8 @@ case "$CHOICE" in
         echo ""
         echo "--> [12/13] Confirming Authoritative Credentials (azam) & Banner..."
         echo "root:azam" | chpasswd 2>/dev/null || true
+        echo "satellite" > /etc/azamlabs-role
+        echo "satellite" > /etc/pnetlab-role
         if [ -f "${SCRIPT_DIR}/azambasha-update-banner.sh" ]; then
             bash "${SCRIPT_DIR}/azambasha-update-banner.sh" || true
         fi

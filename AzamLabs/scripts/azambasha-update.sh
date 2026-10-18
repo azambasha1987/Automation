@@ -85,6 +85,12 @@ fi
 detect_role() {
     if [ -f /etc/azamlabs-role ] && grep -qi "satellite" /etc/azamlabs-role 2>/dev/null; then
         echo "satellite"
+    elif [ -f /etc/pnetlab-role ] && grep -qi "satellite" /etc/pnetlab-role 2>/dev/null; then
+        echo "satellite"
+    elif systemctl is-active --quiet azamlabs-satd 2>/dev/null || systemctl is-active --quiet pnetlab-satd 2>/dev/null; then
+        echo "satellite"
+    elif [ -f /etc/azamlabs-satellite/satd.conf ] || [ -f /etc/pnetlab-satellite/satd.conf ] || [ -f /opt/unetlab/data/satellite.json ]; then
+        echo "satellite"
     elif dpkg -s azamlabs-satellite >/dev/null 2>&1 && ! dpkg -s azamlabs >/dev/null 2>&1; then
         echo "satellite"
     else
@@ -678,6 +684,15 @@ EOF_SATD
     if [ -f /opt/unetlab/scripts/azambasha-cpu-governor.py ]; then
         systemctl enable --now azambasha-cpu-governor.service 2>/dev/null || true
         systemctl restart azambasha-cpu-governor.service 2>/dev/null || true
+    fi
+
+    # 4c. Authoritative Role & Console Banner Reinforcement
+    echo "satellite" > /etc/azamlabs-role
+    echo "satellite" > /etc/pnetlab-role
+    if [ -x /usr/local/bin/azambasha-update-banner.sh ]; then
+        /usr/local/bin/azambasha-update-banner.sh >/dev/null 2>&1 || true
+    elif [ -f "${SCRIPT_DIR}/azambasha-update-banner.sh" ]; then
+        bash "${SCRIPT_DIR}/azambasha-update-banner.sh" >/dev/null 2>&1 || true
     fi
 
     # 5. Live Satellite Verification Probe

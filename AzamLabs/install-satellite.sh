@@ -910,6 +910,7 @@ fi
 
 # ── Dynamic Console Banner & Live IP Hook for Satellite Worker ───────────────
 echo "satellite" > /etc/azamlabs-role
+echo "satellite" > /etc/pnetlab-role
 BANNER_SCRIPT="/usr/local/bin/azambasha-update-banner.sh"
 if [ -f "${SCRIPT_DIR}/scripts/azambasha-update-banner.sh" ]; then
     cp -f "${SCRIPT_DIR}/scripts/azambasha-update-banner.sh" "$BANNER_SCRIPT"

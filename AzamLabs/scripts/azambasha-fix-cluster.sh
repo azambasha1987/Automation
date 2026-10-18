@@ -600,12 +600,33 @@ fi
 
 CLUSTER_PSK="${CLUSTER_DIR}/psk"
 if [ ! -s "$CLUSTER_PSK" ]; then
-    umask 077
-    openssl rand -hex 32 > "$CLUSTER_PSK"
-    chmod 600 "$CLUSTER_PSK"
-    log_ok "Generated new 64-hex Cluster PSK at $CLUSTER_PSK."
+    if [ -s "/etc/pnetlab/cluster/psk" ]; then
+        cp -f "/etc/pnetlab/cluster/psk" "$CLUSTER_PSK"
+        chmod 600 "$CLUSTER_PSK"
+        log_ok "Migrated existing Cluster PSK from /etc/pnetlab/cluster/psk."
+    else
+        umask 077
+        openssl rand -hex 32 > "$CLUSTER_PSK"
+        chmod 600 "$CLUSTER_PSK"
+        log_ok "Generated new 64-hex Cluster PSK at $CLUSTER_PSK."
+    fi
 else
     log_ok "Cluster PSK already active at $CLUSTER_PSK."
+fi
+
+# Ensure bidirectional sync to legacy /etc/pnetlab/cluster
+mkdir -p /etc/pnetlab/cluster 2>/dev/null || true
+cp -f "$CLUSTER_PSK" /etc/pnetlab/cluster/psk 2>/dev/null || true
+chmod 600 /etc/pnetlab/cluster/psk 2>/dev/null || true
+
+# Migrate hosts.json if azamlabs hosts.json does not exist
+if [ ! -f "${CLUSTER_DIR}/hosts.json" ] && [ -f "/etc/pnetlab/cluster/hosts.json" ]; then
+    cp -f "/etc/pnetlab/cluster/hosts.json" "${CLUSTER_DIR}/hosts.json"
+    chmod 600 "${CLUSTER_DIR}/hosts.json"
+    log_ok "Migrated existing Cluster hosts registry from /etc/pnetlab/cluster/hosts.json."
+elif [ -f "${CLUSTER_DIR}/hosts.json" ]; then
+    cp -f "${CLUSTER_DIR}/hosts.json" /etc/pnetlab/cluster/hosts.json 2>/dev/null || true
+    chmod 600 /etc/pnetlab/cluster/hosts.json 2>/dev/null || true
 fi
 
 # Step 6b: Patch Cluster Status API for Real-Time Dynamic Satellite Probing

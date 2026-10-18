@@ -85,16 +85,26 @@ if [ -f "/etc/azamlabs-role" ]; then
     DETECTED_ROLE="$(cat /etc/azamlabs-role 2>/dev/null || true)"
     [ "$DETECTED_ROLE" = "satellite" ] && ROLE="Satellite Worker Node"
     [ "$DETECTED_ROLE" = "master" ] && ROLE="Master Controller"
+elif [ -f "/etc/pnetlab-role" ]; then
+    DETECTED_ROLE="$(cat /etc/pnetlab-role 2>/dev/null || true)"
+    [ "$DETECTED_ROLE" = "satellite" ] && ROLE="Satellite Worker Node"
+    [ "$DETECTED_ROLE" = "master" ] && ROLE="Master Controller"
+elif systemctl is-active --quiet azamlabs-satd 2>/dev/null || systemctl is-active --quiet pnetlab-satd 2>/dev/null || [ -f "/etc/azamlabs-satellite/satd.conf" ] || [ -f "/etc/pnetlab-satellite/satd.conf" ] || [ -f "/opt/unetlab/data/satellite.json" ]; then
+    ROLE="Satellite Worker Node"
 elif [ -d "/opt/unetlab/html" ] || [ -f "/etc/apache2/sites-available/azamlabs.conf" ]; then
     ROLE="Master Controller"
-elif systemctl is-active --quiet azamlabs-satd 2>/dev/null || [ -f "/opt/unetlab/data/satellite.json" ]; then
-    ROLE="Satellite Worker Node"
 fi
 
 # 3. Generate Formatted Banner
 if [ "$ROLE" = "Satellite Worker Node" ]; then
     PAIR_STATUS="Ready for Master Pairing"
-    if [ -f "/opt/unetlab/data/satellite.json" ] && grep -q "master_ip" "/opt/unetlab/data/satellite.json" 2>/dev/null; then
+    if [ -f "/etc/azamlabs-satellite/satd.conf" ] && grep -q "master_ip" "/etc/azamlabs-satellite/satd.conf" 2>/dev/null; then
+        MASTER_HOST=$(grep -o '"master_ip"[^,]*' /etc/azamlabs-satellite/satd.conf | cut -d'"' -f4)
+        [ -n "$MASTER_HOST" ] && PAIR_STATUS="Paired with Master (${MASTER_HOST})"
+    elif [ -f "/etc/pnetlab-satellite/satd.conf" ] && grep -q "master_ip" "/etc/pnetlab-satellite/satd.conf" 2>/dev/null; then
+        MASTER_HOST=$(grep -o '"master_ip"[^,]*' /etc/pnetlab-satellite/satd.conf | cut -d'"' -f4)
+        [ -n "$MASTER_HOST" ] && PAIR_STATUS="Paired with Master (${MASTER_HOST})"
+    elif [ -f "/opt/unetlab/data/satellite.json" ] && grep -q "master_ip" "/opt/unetlab/data/satellite.json" 2>/dev/null; then
         MASTER_HOST=$(grep -o '"master_ip"[^,]*' /opt/unetlab/data/satellite.json | cut -d'"' -f4)
         [ -n "$MASTER_HOST" ] && PAIR_STATUS="Paired with Master (${MASTER_HOST})"
     fi

@@ -283,9 +283,10 @@ fi
 log_info "[5/7] Executing HMAC cluster join handshake with Master..."
 
 JOIN_SUCCESS=0
-if command -v pnet-satellite-join >/dev/null 2>&1; then
+PNET_JOIN_BIN="$(command -v pnet-satellite-join 2>/dev/null || true)"
+if [ -n "$PNET_JOIN_BIN" ] && ! grep -q "Azam Basha" "$PNET_JOIN_BIN" 2>/dev/null; then
     log_info "Invoking authoritative pnet-satellite-join..."
-    if printf '%s\n' "$CLUSTER_PSK" | pnet-satellite-join \
+    if printf '%s\n' "$CLUSTER_PSK" | "$PNET_JOIN_BIN" \
         --master "$MASTER_IP" \
         --id "$SLOT_ID" \
         --name "$SAT_NAME" \
@@ -297,7 +298,7 @@ fi
 
 if [ "$JOIN_SUCCESS" -ne 1 ]; then
     log_info "Executing direct Python cluster join protocol..."
-    python3 - <<PYJOIN
+    MASTER_IP="$MASTER_IP" SLOT_ID="$SLOT_ID" SAT_NAME="$SAT_NAME" CLUSTER_PSK="$CLUSTER_PSK" SAT_IP="${SAT_IP:-}" python3 - << 'PYJOIN'
 import os
 import sys
 import json
@@ -309,11 +310,11 @@ import urllib.request
 import socket
 import subprocess
 
-master = "${MASTER_IP}"
-slot = int("${SLOT_ID}")
-name = "${SAT_NAME}"
-psk = "${CLUSTER_PSK}".strip()
-custom_ip = "${SAT_IP}".strip()
+master = os.environ["MASTER_IP"]
+slot = int(os.environ["SLOT_ID"])
+name = os.environ["SAT_NAME"]
+psk = os.environ["CLUSTER_PSK"].strip()
+custom_ip = os.environ.get("SAT_IP", "").strip()
 
 conf_dir = "/etc/azamlabs-satellite"
 conf_path = conf_dir + "/satd.conf"
@@ -404,10 +405,21 @@ with open(conf_path, "w") as f:
     json.dump({"master_ip": master, "host_id": slot, "name": name, "psk": psk}, f, indent=2)
 os.chmod(conf_path, 0o600)
 
+# Also mirror to legacy /etc/pnetlab-satellite for total compatibility
+os.makedirs("/etc/pnetlab-satellite", mode=0o700, exist_ok=True)
+with open("/etc/pnetlab-satellite/satd.conf", "w") as f:
+    json.dump({"master_ip": master, "host_id": slot, "name": name, "psk": psk}, f, indent=2)
+os.chmod("/etc/pnetlab-satellite/satd.conf", 0o600)
+
 os.makedirs(db_conf_dir, mode=0o755, exist_ok=True)
 with open(db_conf_path, "w") as f:
     json.dump({"host": master, "pass": resp["db_pass"]}, f, indent=2)
 os.chmod(db_conf_path, 0o600)
+
+os.makedirs("/etc/pnetlab", mode=0o755, exist_ok=True)
+with open("/etc/pnetlab/cluster-db.conf", "w") as f:
+    json.dump({"host": master, "pass": resp["db_pass"]}, f, indent=2)
+os.chmod("/etc/pnetlab/cluster-db.conf", 0o600)
 
 # Pin cluster key in authorized_keys (unjailed to allow scp/ssh for GUI Satellite Sync)
 pubkey = resp["rsync_pubkey"].strip()
@@ -441,6 +453,34 @@ fi
 
 # Step 7: Restart & Verify Systemd Services
 log_info "[7/7] Enabling and refreshing satellite services..."
+systemctl stop pnetlab-satd.service 2>/dev/null || true
+systemctl disable pnetlab-satd.service 2>/dev/null || true
+
+if [ ! -f /etc/systemd/system/azamlabs-satd.service ]; then
+    cat << 'EOF_USATD' > /etc/systemd/system/azamlabs-satd.service
+[Unit]
+Description=AzamLabs satellite cluster agent (TLS, PSK-authenticated)
+After=network.target azamlabs-brokerd.service
+Wants=azamlabs-brokerd.service
+ConditionPathExists=/etc/azamlabs-satellite/satd.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/unetlab/scripts/azamlabs-satd.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF_USATD
+fi
+
+echo "satellite" > /etc/azamlabs-role
+echo "satellite" > /etc/pnetlab-role
+if [ -x /usr/local/bin/azambasha-update-banner.sh ]; then
+    /usr/local/bin/azambasha-update-banner.sh >/dev/null 2>&1 || true
+fi
+
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable azamlabs-satd.service 2>/dev/null || true
 systemctl restart azamlabs-satd.service 2>/dev/null || true
