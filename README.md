@@ -1,41 +1,56 @@
-﻿# AzamLabs
+# Network Automation (IT-AUTOMATION)
 
-AzamLabs is a self-hosted virtual network emulation platform and enterprise network automation repository. It brings together high-performance network device virtualization and modern NetDevOps toolchains into an integrated engineering ecosystem.
+An enterprise-grade repository for multi-vendor network automation workflows, Ansible playbooks, and modern Python NetDevOps toolchains targeting Cisco, Arista, and Linux network topologies.
 
 ---
 
 ## Repository Structure
 
-This repository is organized into two core modules:
-
-* **[`AzamLabs/`](AzamLabs/)**: The standalone network emulation platform engine, web management interfaces, high-density hypervisor configurations, and system operations toolchains.
-* **[`IT-AUTOMATION/`](IT-AUTOMATION/)**: Enterprise network automation workflows, Ansible playbooks, and multi-vendor automation scripts (Netmiko, Paramiko, NAPALM) targeting Cisco, Arista, and Linux network topologies.
+```
+Automation/
+├── ANSIBLE/                        # Ansible playbooks, inventory, and roles
+│   └── .gitkeep
+└── PYTHON/                         # Python network automation toolchains
+    ├── 0-Python-Basics/            # Foundational Python scripts for network engineers
+    ├── 1-Telnet/                   # Legacy switch & router Telnet automation & config backup
+    └── 2-SSH/                      # Production SSH automation frameworks
+        ├── a-Paramiko/             # Low-level SSH socket automation
+        ├── b-Netmiko/              # Multi-vendor CLI automation (Cisco IOS-XE, Nexus, Arista)
+        │   ├── 0-Basics-Single-Device.py
+        │   ├── 1-Erorr-Handling.py
+        │   ├── 2-SingleL2Switch.py
+        │   ├── 3-Multiple-SW-Same-config.py
+        │   ├── 4-Multiple-SW-Differnet-config.py
+        │   ├── 5-Device-Backup.py
+        │   ├── 6a-Replace-password-with-vairable.py
+        │   └── 6b-encrypt-devices.py
+        └── c-Napalm/               # Cross-vendor declarative network manipulation
+            ├── 1-Basics/           # State validation and structured JSON data extraction
+            ├── 2-BGP/              # Dynamic BGP neighbor inspection & large-scale deployment
+            └── c-Audit/            # Network compliance, ACL validation, and diff-based merging
+```
 
 ---
 
-## Platform Highlights
+## Toolchains & Frameworks
 
-### Standalone Multi-Vendor Network Emulation
-* **Wide Virtual Device Ecosystem**: Native support for Cisco IOL, QEMU/KVM virtual appliances (IOS-XE, IOS-XR, NX-OS), containerized network functions (Docker/Containerlab), and standard Linux end-host micro-appliances.
-* **Accelerated Dataplane Engine**: Kernel-level fast-path bridge acceleration delivering high throughput and low-latency link interconnection between simulated nodes.
-* **Resource Optimization & Density**: Adaptive CPU governors, Kernel Same-page Merging (KSM), and boot-storm dampening for scaling large multi-node topologies on resource-constrained hardware.
+### 1. Python Automation Modules
+* **Netmiko**: Handles multi-vendor SSH connections with robust error handling, device credential abstraction, and concurrent multi-device provisioning.
+* **Paramiko**: Direct SSHv2 client library handling low-level terminal channel interactions.
+* **NAPALM**: Vendor-neutral network automation library used for configuration auditing, ACL deployments, and declarative state verification.
 
-### Intelligent Canvas & Visual Toolkit
-* **Smart Alignment Dock**: Precision layout tools including horizontal/vertical distribution, grid snapping, radial alignment, and node centering.
-* **Spotlight Quick-Switcher**: Keyboard-driven quick-access command palette for searching devices, executing operations, and switching active viewports.
-* **Radar Mini-Map**: Dynamic floating canvas navigator providing real-time panning across sprawling multi-tier network topologies.
-* **Live In-Browser Packet Dissector**: Capture and inspect data packets directly in the web browser without requiring external client software installations.
-
-### Enterprise Cluster Architecture
-* **Master-Satellite Scaling**: Scale compute workloads seamlessly across multiple physical hypervisors by attaching headless worker nodes to an active master cluster.
-* **Automated SSL & Security**: Built-in TLS certificate provisioning, local CA authority generation, and trusted browser integration.
-* **Automated Backups & Versioning**: Complete lab topology state snapshots, configuration diffs, and Git-backed topology version tracking.
+### 2. Ansible Playbooks
+* Automated orchestration of network state, configuration compliance checks, and scheduled backups across enterprise switches and routers.
 
 ---
 
-## Network Automation Suites
+## Related Repositories
 
-The [`IT-AUTOMATION/`](IT-AUTOMATION/) module provides tested production-grade automation scripts designed to interact directly with network nodes running in AzamLabs or physical environments:
+* **[AzamLabs](https://github.com/azambasha1987/AzamLabs)**: Self-hosted virtual network emulation platform engine, hypervisor orchestration, and satellite clusters.
+* **[GNS3](https://github.com/azambasha1987/GNS3)**: AzamGNS3 3.1 enterprise edition, unified server daemon, and web management interface.
 
-* **Ansible Workflows**: Playbooks and roles for structured multi-device configuration provisioning and compliance auditing.
-* **Python Network Libraries**: Netmiko, Paramiko, and NAPALM automation scripts for device scraping, zero-touch configuration backups, BGP policy enforcement, and dynamic interface provisioning.
+---
+
+## License
+
+Internal Enterprise Repository — All rights reserved.

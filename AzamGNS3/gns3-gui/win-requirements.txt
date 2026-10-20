@@ -1,4 +1,0 @@
--rrequirements.txt
-
-PyQt6==6.10.2 # pyup: ignore
-pywin32==311 # pyup: ignore
